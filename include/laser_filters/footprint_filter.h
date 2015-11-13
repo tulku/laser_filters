@@ -57,7 +57,6 @@ class LaserScanFootprintFilter : public filters::FilterBase<sensor_msgs::LaserSc
 public:
   LaserScanFootprintFilter(): up_and_running_(false)
   {
-    ROS_WARN("LaserScanFootprintFilter has been deprecated.  Please use PR2LaserScanFootprintFilter instead.\n");
   }
 
   bool configure()
@@ -71,17 +70,50 @@ public:
   }
 
   virtual ~LaserScanFootprintFilter()
-  { 
+  {
+  }
 
+  void transformLaserScanToPointCloud (const std::string &target_frame, sensor_msgs::PointCloud &cloud_out, const sensor_msgs::LaserScan &scan_in,
+                                      tf::Transformer& tf)
+  {
+    cloud_out.header = scan_in.header;
+
+    tf::Stamped<tf::Point> pointIn;
+    tf::Stamped<tf::Point> pointOut;
+
+    projector_.projectLaser(scan_in, cloud_out);
+    cloud_out.header.frame_id = target_frame;
+
+    tf::StampedTransform transform;
+    tf.lookupTransform(target_frame, scan_in.header.frame_id, ros::Time(0), transform);
+
+    int index_channel_idx = indexChannel(cloud_out);
+    ROS_ASSERT(index_channel_idx >= 0);
+
+    for(unsigned int i = 0; i < cloud_out.points.size(); ++i)
+    {
+      //get the index for this point
+      uint32_t pt_index = cloud_out.channels[index_channel_idx].values[i];
+
+      // Apply the transform to the current point
+      tf::Vector3 pointIn(cloud_out.points[i].x, cloud_out.points[i].y, cloud_out.points[i].z) ;
+      tf::Vector3 pointOut = transform * pointIn ;
+
+      // Copy transformed point into cloud
+      cloud_out.points[i].x  = pointOut.x();
+      cloud_out.points[i].y  = pointOut.y();
+      cloud_out.points[i].z  = pointOut.z();
+    }
   }
 
   bool update(const sensor_msgs::LaserScan& input_scan, sensor_msgs::LaserScan& filtered_scan)
   {
     filtered_scan = input_scan ;
+    tf::StampedTransform transform;
     sensor_msgs::PointCloud laser_cloud;
 
     try{
-      projector_.transformLaserScanToPointCloud("base_link", input_scan, laser_cloud, tf_);
+      transformLaserScanToPointCloud ("base_link", laser_cloud, input_scan, tf_);
     }
     catch(tf::TransformException& ex){
       if(up_and_running_){
@@ -99,12 +131,13 @@ public:
       ROS_ERROR("We need an index channel to be able to filter out the footprint");
       return false;
     }
-    
-    for (unsigned int i=0; i < laser_cloud.points.size(); i++)  
+
+    for (unsigned int i=0; i < laser_cloud.points.size(); i++)
     {
       if (inFootprint(laser_cloud.points[i])){
         int index = laser_cloud.channels[c_idx].values[i];
-        filtered_scan.ranges[index] = filtered_scan.range_max + 1.0 ; // If so, then make it a value bigger than the max range
+        filtered_scan.ranges[index] = std::numeric_limits<float>::quiet_NaN();
+         // If so, then make it a value bigger than the max range
       }
     }
 
